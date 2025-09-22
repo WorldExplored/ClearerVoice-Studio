@@ -65,6 +65,20 @@ FP16:
   "processed_seconds": 2.3946666666666667
 }
 
+FP 16: 
+{
+  "timestamp": "2025-09-22T21:20:59.943221Z",
+  "model": "MossFormer2_SE_48K",
+  "task": "speech_enhancement",
+  "input_path": "/home/ubuntu/ClearerVoice-Studio/clearvoice/samples/input.wav",
+  "ttft": 3.403327703475952,
+  "tpot": 3.403327703475952,
+  "tps": 0.7045126737431566,
+  "model_init_s": 16.646188020706177,
+  "processed_seconds": 2.3976875
+}
+
+
 Packages: urllib3-2.5.0 yamlargparse-1.31.1
 
 
