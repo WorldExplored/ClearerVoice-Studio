@@ -38,6 +38,7 @@ class network_wrapper(nn.Module):
         parser.add_argument('--output-dir', dest='output_dir', type=str, help='Directory for enhanced audio output')
         parser.add_argument('--use-cuda', dest='use_cuda', default=1, type=int, help='Enable CUDA (1=True, 0=False)')
         parser.add_argument('--num-gpu', dest='num_gpu', type=int, default=1, help='Number of GPUs to use')
+        parser.add_argument('--fp16', dest='fp16', type=int, default=0, help='Enable FP16 inference (1=True, 0=False)')
 
         # Model-specific settings
         parser.add_argument('--network', type=str, help='Select SE models: FRCRN_SE_16K, MossFormer2_SE_48K')
@@ -126,6 +127,7 @@ class network_wrapper(nn.Module):
         parser.add_argument('--output-dir', dest='output_dir', type=str, help='Directory for enhanced high-resolution audio output')
         parser.add_argument('--use-cuda', dest='use_cuda', default=1, type=int, help='Enable CUDA (1=True, 0=False)')
         parser.add_argument('--num-gpu', dest='num_gpu', type=int, default=1, help='Number of GPUs to use')
+        parser.add_argument('--fp16', dest='fp16', type=int, default=1, help='Enable FP16 inference (1=True, 0=False)')
 
         # Model-specific settings
         parser.add_argument('--network', type=str, help='Select SR model(currently supports MossFormer2_SR_48K)')

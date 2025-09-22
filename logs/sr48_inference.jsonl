@@ -1,0 +1,1 @@
+{"timestamp": "2025-09-21T06:44:52.413494Z", "model": "MossFormer2_SR_48K", "task": "speech_super_resolution", "input_path": "/Users/srreyanshsethi/Downloads/ClearerVoice-Studio/clearvoice/samples/input_sr.wav", "ttft": 25.279545783996582, "tpot": 25.279545783996582, "tps": 0.09472744040292962, "model_init_s": 70.75207805633545, "processed_seconds": 2.3946666666666667}

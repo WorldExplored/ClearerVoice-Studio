@@ -12,7 +12,7 @@ import os
 import sys
 import librosa
 import torchaudio
-from .misc import power_compress, power_uncompress, stft, istft, compute_fbank
+from .misc import power_compress, power_uncompress, stft, istft, compute_fbank, compute_deltas_conv
 from .bandwidth_sub import bandwidth_sub
 from ..dataloader.meldataset import mel_spectrogram
 
@@ -89,6 +89,13 @@ def decode_one_audio_mossformer2_ss_16k(model, device, inputs, args):
             inputs = np.concatenate([inputs, np.zeros((inputs.shape[0], padding))], axis=1)
 
     inputs = torch.from_numpy(np.float32(inputs)).to(device)  # Convert inputs to torch tensor and move to device
+    # If model is in FP16 (CUDA), cast inputs to half to avoid dtype mismatch
+    try:
+        model_dtype = next(model.parameters()).dtype
+    except StopIteration:
+        model_dtype = torch.float32
+    if model_dtype == torch.float16 and str(device).startswith('cuda'):
+        inputs = inputs.half()
     b, t = inputs.shape  # Update batch size and input length after conversion
 
     # Process the inputs in segments if necessary
@@ -115,7 +122,8 @@ def decode_one_audio_mossformer2_ss_16k(model, device, inputs, args):
         # If no segmentation is required, process the entire input
         out_list = model(inputs)
         for spk in range(args.num_spks):
-            out.append(out_list[spk][:, :input_len].detach().cpu().numpy())  # Append output for each speaker
+            # Ensure outputs are in float32 for numpy compatibility
+            out.append(out_list[spk][:, :input_len].detach().float().cpu().numpy())
 
     # Normalize the outputs back to the input magnitude for each speaker
     for spk in range(args.num_spks):
@@ -358,7 +366,7 @@ def decode_one_audio_mossformer2_se_48k(model, device, inputs, args):
 
             audio = torch.from_numpy(inputs).type(torch.FloatTensor)  # Convert to Torch tensor
             b, t = audio.shape  # Update length after conversion
-            outputs = torch.from_numpy(np.zeros((b, t)))  # Initialize output tensor
+            outputs = torch.zeros((b, t), dtype=torch.float32)  # Initialize output tensor on CPU (matches STFT/iSTFT)
             give_up_length = (window - stride) // 2  # Determine length to ignore at the edges
             dfsmn_memory_length = 0  # Placeholder for potential memory length
             current_idx = 0  # Initialize current index for sliding window
@@ -375,14 +383,8 @@ def decode_one_audio_mossformer2_se_48k(model, device, inputs, args):
                     # Compute filter banks for the audio segment
                     fbanks = compute_fbank(audio_segment[batch_idx:batch_idx+1,:], args)
                 
-                    # Compute deltas for filter banks
-                    fbank_tr = torch.transpose(fbanks, 0, 1)  # Transpose for delta computation
-                    fbank_delta = torchaudio.functional.compute_deltas(fbank_tr)  # First-order delta
-                    fbank_delta_delta = torchaudio.functional.compute_deltas(fbank_delta)  # Second-order delta
-                
-                    # Transpose back to original shape
-                    fbank_delta = torch.transpose(fbank_delta, 0, 1)
-                    fbank_delta_delta = torch.transpose(fbank_delta_delta, 0, 1)
+                    # Compute deltas for filter banks via CUDA FP16 depthwise conv
+                    fbank_delta, fbank_delta_delta = compute_deltas_conv(fbanks, args)
 
                     # Concatenate the original filter banks with their deltas
                     fbanks = torch.cat([fbanks, fbank_delta, fbank_delta_delta], dim=1)
@@ -391,7 +393,7 @@ def decode_one_audio_mossformer2_se_48k(model, device, inputs, args):
                     if batch_idx == 0:
                         batch_fbanks = fbanks
                     else:
-                    	batch_fbanks = torch.cat([batch_fbanks, fbanks], dim=0)
+                        batch_fbanks = torch.cat([batch_fbanks, fbanks], dim=0)
                 # Pass filter banks through the model
                 Out_List = model(batch_fbanks)
                 pred_mask = Out_List[-1]  # Get the predicted mask from the output
@@ -399,8 +401,10 @@ def decode_one_audio_mossformer2_se_48k(model, device, inputs, args):
                 for batch_idx in range(b):
                     # Apply STFT to the audio segment
                     spectrum = stft(audio_segment[batch_idx,:], args)
-                    pred_mask = pred_mask[batch_idx:batch_idx+1, :, :].permute(2, 1, 0)  # Permute dimensions for masking
-                    masked_spec = spectrum.cpu() * pred_mask.detach().cpu()  # Apply mask to the spectrum
+                    pred_mask = pred_mask[batch_idx:batch_idx+1, :, :].permute(2, 1, 0).detach()  # Permute and detach
+                    # Boundary cast: make pred_mask match spectrum's device/dtype
+                    pred_mask_on_spec = pred_mask.to(device=spectrum.device, dtype=spectrum.dtype)
+                    masked_spec = spectrum * pred_mask_on_spec  # Apply mask without extra transfers
                     masked_spec_complex = masked_spec[:, :, 0] + 1j * masked_spec[:, :, 1]  # Convert to complex form
 
                     # Reconstruct audio from the masked spectrogram
@@ -423,12 +427,8 @@ def decode_one_audio_mossformer2_se_48k(model, device, inputs, args):
         
         for batch_idx in range(b):
             fbanks = compute_fbank(audio[batch_idx:batch_idx+1,:], args)
-            # Compute deltas for filter banks
-            fbank_tr = torch.transpose(fbanks, 0, 1)
-            fbank_delta = torchaudio.functional.compute_deltas(fbank_tr)
-            fbank_delta_delta = torchaudio.functional.compute_deltas(fbank_delta)
-            fbank_delta = torch.transpose(fbank_delta, 0, 1)
-            fbank_delta_delta = torch.transpose(fbank_delta_delta, 0, 1)
+            # Compute deltas for filter banks via CUDA FP16 depthwise conv
+            fbank_delta, fbank_delta_delta = compute_deltas_conv(fbanks, args)
 
             # Concatenate the original filter banks with their deltas
             fbanks = torch.cat([fbanks, fbank_delta, fbank_delta_delta], dim=1)
@@ -443,8 +443,10 @@ def decode_one_audio_mossformer2_se_48k(model, device, inputs, args):
         pred_mask_b = Out_List[-1]  # Get the predicted mask
         for batch_idx in range(b): 
             spectrum = stft(audio[batch_idx, :], args)  # Apply STFT to the audio
-            pred_mask = pred_mask_b[batch_idx:batch_idx+1, :, :].permute(2, 1, 0)  # Permute dimensions for masking
-            masked_spec = spectrum * pred_mask.detach().cpu()  # Apply mask to the spectrum
+            pred_mask = pred_mask_b[batch_idx:batch_idx+1, :, :].permute(2, 1, 0).detach()  # Permute and detach
+            # Boundary cast: make pred_mask match spectrum's device/dtype
+            pred_mask_on_spec = pred_mask.to(device=spectrum.device, dtype=spectrum.dtype)
+            masked_spec = spectrum * pred_mask_on_spec  # Apply mask without extra transfers
             masked_spec_complex = masked_spec[:, :, 0] + 1j * masked_spec[:, :, 1]  # Convert to complex form
         
             # Reconstruct audio from the masked spectrogram
@@ -515,6 +517,8 @@ def decode_one_audio_mossformer2_sr_48k(model, device, inputs, args):
         The high-resolution audio waveform as a NumPy array, refined and upsampled.
     """
     b, input_len = inputs.shape  # Get the length of the input audio
+    # Enable FP16 mixed precision on CUDA to align with single-audio path
+    use_fp16 = getattr(args, 'fp16', 0) == 1 and str(device).startswith('cuda')
 
     # Check if input length exceeds the defined threshold for online decoding
     if input_len > args.sampling_rate * args.one_time_decode_length:  # 20 seconds
@@ -557,8 +561,13 @@ def decode_one_audio_mossformer2_sr_48k(model, device, inputs, args):
                         mel_segment_b = mel_segment
                     else:
                         mel_segment_b = torch.cat([mel_segment_b, mel_segment], dim=0) 
-                mossformer_output_segment = model[0](mel_segment_b.to(device))
-                generator_output_segment = model[1](mossformer_output_segment)
+                if use_fp16:
+                    with torch.cuda.amp.autocast(dtype=torch.float16):
+                        mossformer_output_segment = model[0](mel_segment_b.to(device))
+                        generator_output_segment = model[1](mossformer_output_segment)
+                else:
+                    mossformer_output_segment = model[0](mel_segment_b.to(device))
+                    generator_output_segment = model[1](mossformer_output_segment)
                 generator_output_segment = torch.squeeze(generator_output_segment, 1)
                 offset = audio_segment.shape[1] - generator_output_segment.shape[1]
                 # Store the output segment in the output tensor
@@ -578,8 +587,13 @@ def decode_one_audio_mossformer2_sr_48k(model, device, inputs, args):
                 mel_input_b = mel_input
             else:
                 mel_input_b = torch.cat([mel_input_b, mel_input], dim=0)
-        mossformer_output = model[0](mel_input_b.to(device))
-        generator_output = model[1](mossformer_output)
+        if use_fp16:
+            with torch.cuda.amp.autocast(dtype=torch.float16):
+                mossformer_output = model[0](mel_input_b.to(device))
+                generator_output = model[1](mossformer_output)
+        else:
+            mossformer_output = model[0](mel_input_b.to(device))
+            generator_output = model[1](mossformer_output)
         outputs = generator_output.squeeze(1)
 
     outputs_pred = outputs.detach().cpu().numpy()

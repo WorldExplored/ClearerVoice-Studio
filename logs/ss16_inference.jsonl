@@ -1,0 +1,1 @@
+{"timestamp": "2025-09-21T06:43:13.004459Z", "model": "MossFormer2_SS_16K", "task": "speech_separation", "input_path": "/Users/srreyanshsethi/Downloads/ClearerVoice-Studio/clearvoice/samples/input_ss.wav", "ttft": 69.33684587478638, "tpot": 69.33684587478638, "tps": 9.013966414461244e-07, "model_init_s": 27.261040210723877, "processed_seconds": 6.25e-05}

@@ -9,6 +9,7 @@ from __future__ import print_function
 # Import necessary libraries
 import torch 
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from joblib import Parallel, delayed
 import os 
@@ -129,7 +130,7 @@ def reload_for_eval(model, checkpoint_dir, use_cuda):
              state[key] = pretrained_model[key.replace('module.', '')]
         elif 'module.'+key in pretrained_model and state[key].shape == pretrained_model['module.'+key].shape:
              state[key] = pretrained_model['module.'+key]
-        elif self.print: print(f'{key} not loaded')
+        else: print(f'{key} not loaded')
     model.load_state_dict(state)
 
     print('=> Reload well-trained model {} for decoding.'.format(model_name))
@@ -261,17 +262,28 @@ def stft(x, args, center=False, periodic=False, onesided=None):
     win_inc = args.win_inc
     fft_len = args.fft_len
 
-    # Select window type and create window tensor
+    # Handle dtype/device and create window tensor on x.device with appropriate dtype
+    orig_dtype = x.dtype
+    compute_dtype = orig_dtype
+    x_compute = x
+    # Upcast FP16 on CUDA for numerical stability / library support
+    if x.is_cuda and orig_dtype == torch.float16:
+        compute_dtype = torch.float32
+        x_compute = x.to(dtype=compute_dtype)
+
     if win_type == 'hamming':
-        window = torch.hamming_window(win_len, periodic=periodic).to(x.device)
+        window = torch.hamming_window(win_len, periodic=periodic, dtype=compute_dtype, device=x.device)
     elif win_type == 'hanning':
-        window = torch.hann_window(win_len, periodic=periodic).to(x.device)
+        window = torch.hann_window(win_len, periodic=periodic, dtype=compute_dtype, device=x.device)
     else:
         print(f"In STFT, {win_type} is not supported!")
         return
 
-    # Compute and return the STFT
-    return torch.stft(x, fft_len, win_inc, win_len, center=center, window=window, onesided=onesided, return_complex=False)
+    # Compute STFT in compute_dtype, cast back if needed
+    out = torch.stft(x_compute, fft_len, win_inc, win_len, center=center, window=window, onesided=onesided, return_complex=False)
+    if out.dtype != orig_dtype:
+        out = out.to(dtype=orig_dtype)
+    return out
 
 def istft(x, args, slen=None, center=False, normalized=False, periodic=False, onesided=None, return_complex=False):
     """Computes the inverse Short-Time Fourier Transform (ISTFT) of a complex spectrogram.
@@ -293,45 +305,144 @@ def istft(x, args, slen=None, center=False, normalized=False, periodic=False, on
     win_inc = args.win_inc
     fft_len = args.fft_len
 
-    # Select window type and create window tensor
+    # Handle dtype/device and create window tensor on x.device with appropriate dtype
+    orig_dtype = x.dtype
+    compute_dtype = orig_dtype
+    x_compute = x
+    # Upcast FP16 on CUDA for numerical stability / library support
+    if x.is_cuda and orig_dtype == torch.float16:
+        compute_dtype = torch.float32
+        x_compute = x.to(dtype=compute_dtype)
+
     if win_type == 'hamming':
-        window = torch.hamming_window(win_len, periodic=periodic).to(x.device)
+        window = torch.hamming_window(win_len, periodic=periodic, dtype=compute_dtype, device=x.device)
     elif win_type == 'hanning':
-        window = torch.hann_window(win_len, periodic=periodic).to(x.device)
+        window = torch.hann_window(win_len, periodic=periodic, dtype=compute_dtype, device=x.device)
     else:
         print(f"In ISTFT, {win_type} is not supported!")
         return
 
     try:
-        # Attempt to compute ISTFT
-        output = torch.istft(x, n_fft=fft_len, hop_length=win_inc, win_length=win_len,
+        # Attempt to compute ISTFT in compute_dtype
+        output = torch.istft(x_compute, n_fft=fft_len, hop_length=win_inc, win_length=win_len,
                               window=window, center=center, normalized=normalized,
                               onesided=onesided, length=slen, return_complex=False)
     except:
-        # Handle potential errors by converting x to a complex tensor
-        x_complex = torch.view_as_complex(x)
+        # Handle potential errors by converting x to a complex tensor (ensure compute dtype)
+        x_complex = torch.view_as_complex(x_compute)
         output = torch.istft(x_complex, n_fft=fft_len, hop_length=win_inc, win_length=win_len,
                               window=window, center=center, normalized=normalized,
                               onesided=onesided, length=slen, return_complex=False)
+
+    if output.dtype != orig_dtype:
+        output = output.to(dtype=orig_dtype)
     return output
 
 def compute_fbank(audio_in, args):
-    """Computes the filter bank features from an audio signal.
+    """Compute Mel filter bank features on CUDA in FP16 and return (frames, mels).
+
+    This replaces the previous Kaldi fbank with torchaudio's MelSpectrogram.
+    The transform is constructed once and cached in `args` to avoid reallocation.
 
     Args:
-        audio_in (torch.Tensor): Input audio signal.
-        args (Namespace): Configuration arguments containing window length, shift, and sampling rate.
+        audio_in (torch.Tensor): Input audio of shape (batch, time).
+        args (Namespace): Configuration with fields sampling_rate, fft_len, win_len, win_inc, num_mels, win_type,
+                          and use_cuda (1 for CUDA, 0 for CPU).
 
     Returns:
-        torch.Tensor: Computed filter bank features.
+        torch.Tensor: Mel features with shape (frames, mels).
     """
-    frame_length = args.win_len / args.sampling_rate * 1000  # Frame length in milliseconds
-    frame_shift = args.win_inc / args.sampling_rate * 1000  # Frame shift in milliseconds
+    # Decide device and dtype
+    use_cuda = getattr(args, 'use_cuda', 0) == 1 and torch.cuda.is_available()
+    device = torch.device('cuda') if use_cuda else torch.device('cpu')
+    dtype = torch.float16 if use_cuda else torch.float32
 
-    # Compute and return filter bank features using Kaldi's implementation
-    return torchaudio.compliance.kaldi.fbank(audio_in, dither=1.0, frame_length=frame_length,
-                                             frame_shift=frame_shift, num_mel_bins=args.num_mels,
-                                             sample_frequency=args.sampling_rate, window_type=args.win_type)
+    # Build and cache the transform once
+    if not hasattr(args, '_mel_transform'):
+        window_fn = torch.hamming_window if getattr(args, 'win_type', 'hamming') == 'hamming' else torch.hann_window
+        args._mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=args.sampling_rate,
+            n_fft=args.fft_len,
+            win_length=args.win_len,
+            hop_length=args.win_inc,
+            n_mels=args.num_mels,
+            window_fn=window_fn,
+            center=False,
+            power=2.0,
+            norm=None,
+            mel_scale='htk',
+        )
+        args._mel_transform = args._mel_transform.to(device=device, dtype=dtype)
+    else:
+        # Ensure cached transform is on the desired device/dtype
+        args._mel_transform = args._mel_transform.to(device=device, dtype=dtype)
+
+    # Ensure input is on the same device/dtype and is 2D (B, T)
+    if audio_in.dim() == 1:
+        audio_in = audio_in.unsqueeze(0)
+    audio_in = audio_in.to(device=device, dtype=dtype)
+
+    # Compute mel-spectrogram: (B, n_mels, frames)
+    mel = args._mel_transform(audio_in)
+
+    # Return (frames, mels) for a single item
+    # Callers provide B=1; preserve existing interface returning 2D tensor
+    mel_single = mel[0]  # (n_mels, frames)
+    return mel_single.transpose(0, 1)
                                              
 
+
+def _get_delta_kernel(args, device, dtype):
+    """Create or fetch a cached depthwise Conv1d kernel for deltas.
+
+    Uses a symmetric 5-tap kernel [-2, -1, 0, 1, 2] normalized by 10,
+    applied per mel channel via depthwise grouping.
+    """
+    need_rebuild = (
+        not hasattr(args, '_delta_kernel_weight') or
+        getattr(args, '_delta_num_mels', None) != args.num_mels or
+        args._delta_kernel_weight.device != device or
+        args._delta_kernel_weight.dtype != dtype
+    )
+    if need_rebuild:
+        base = torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0], device=device, dtype=torch.float32)
+        kernel = (base / 10.0).to(dtype).view(1, 1, 5)
+        weight = kernel.expand(args.num_mels, 1, 5).contiguous()
+        args._delta_kernel_weight = weight
+        args._delta_num_mels = args.num_mels
+    return args._delta_kernel_weight
+
+
+def compute_deltas_conv(fbanks, args):
+    """Compute delta and delta-delta via depthwise Conv1d on time axis.
+
+    Args:
+        fbanks (Tensor): (frames, mels)
+        args (Namespace): expects num_mels, use_cuda
+
+    Returns:
+        (delta, delta_delta): both (frames, mels), same device/dtype as fbanks
+    """
+    if fbanks.dim() != 2:
+        raise ValueError('compute_deltas_conv expects 2D tensor (frames, mels)')
+
+    device = fbanks.device
+    dtype = fbanks.dtype
+
+    # Prepare input for conv: (N=1, C=mels, L=frames)
+    x = fbanks.transpose(0, 1).unsqueeze(0)
+    # Replication pad on time axis for 5-tap kernel
+    x_pad = F.pad(x, (2, 2), mode='replicate')
+    weight = _get_delta_kernel(args, device, dtype)
+    delta = F.conv1d(x_pad, weight, bias=None, stride=1, padding=0, groups=args.num_mels)
+    # Back to (frames, mels)
+    delta = delta.squeeze(0).transpose(0, 1)
+
+    # Delta-delta: apply same kernel on delta
+    x2 = delta.transpose(0, 1).unsqueeze(0)
+    x2_pad = F.pad(x2, (2, 2), mode='replicate')
+    delta_delta = F.conv1d(x2_pad, weight, bias=None, stride=1, padding=0, groups=args.num_mels)
+    delta_delta = delta_delta.squeeze(0).transpose(0, 1)
+
+    return delta, delta_delta
 

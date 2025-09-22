@@ -5,6 +5,7 @@ num_gpu: 1
 sampling_rate: 48000
 network: "MossFormer2_SR_48K"  ##network type
 checkpoint_dir: "checkpoints/MossFormer2_SR_48K"
+fp16: 1
 
 #input_path: support wav dir or wav scp or a wav file
 input_path: "samples/scp/cv_demand_testset_16k.scp"

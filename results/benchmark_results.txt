@@ -1,0 +1,78 @@
+== se48 ==
+{
+  "timestamp": "2025-09-21T06:41:32.534217Z",
+  "model": "MossFormer2_SE_48K",
+  "task": "speech_enhancement",
+  "input_path": "/Users/srreyanshsethi/Downloads/ClearerVoice-Studio/clearvoice/samples/input.wav",
+  "ttft": 6.271968841552734,
+  "tpot": 6.271968841552734,
+  "tps": 0.38228625820252177,
+  "model_init_s": 85.51409912109375,
+  "processed_seconds": 2.3976875
+}
+
+FP 16:
+{
+  "timestamp": "2025-09-22T06:50:27.633704Z",
+  "model": "MossFormer2_SE_48K",
+  "task": "speech_enhancement",
+  "input_path": "/home/ubuntu/ClearerVoice-Studio/clearvoice/samples/input.wav",
+  "ttft": 3.380648136138916,
+  "tpot": 3.380648136138916,
+  "tps": 0.7092389989862806,
+  "model_init_s": 16.30823063850403,
+  "processed_seconds": 2.3976875
+}
+
+
+== ss16 ==
+{
+  "timestamp": "2025-09-22T16:39:25.636436Z",
+  "model": "MossFormer2_SS_16K",
+  "task": "speech_separation",
+  "input_path": "/home/ubuntu/ClearerVoice-Studio/clearvoice/samples/input_ss.wav",
+  "ttft": 1.8200738430023193,
+  "tpot": 1.8200738430023193,
+  "tps": 2.4221888122559996,
+  "model_init_s": 3.5997438430786133,
+  "processed_seconds": 4.4085625
+}
+{"timestamp": "2025-09-22T16:39:25.636436Z", "model": "MossFormer2_SS_16K", "task": "speech_separation", "input_path": "/home/ubuntu/ClearerVoice-Studio/clearvoice/samples/input_ss.wav", "ttft": 1.8200738430023193, "tpot": 1.8200738430023193, "tps": 2.4221888122559996, "model_init_s": 3.5997438430786133, "processed_seconds": 4.4085625}
+
+FP16:
+{
+  "timestamp": "2025-09-22T14:59:43.012170Z",
+  "model": "MossFormer2_SS_16K",
+  "task": "speech_separation",
+  "input_path": "/home/ubuntu/ClearerVoice-Studio/clearvoice/samples/input_ss.wav",
+  "ttft": 1.842804193496704,
+  "tpot": 1.842804193496704,
+  "tps": 2.3923119534663058,
+  "model_init_s": 20.427265882492065,
+  "processed_seconds": 4.4085625
+}
+
+== sr48 ==
+{
+  "timestamp": "2025-09-21T06:44:52.413494Z",
+  "model": "MossFormer2_SR_48K",
+  "task": "speech_super_resolution",
+  "input_path": "/Users/srreyanshsethi/Downloads/ClearerVoice-Studio/clearvoice/samples/input_sr.wav",
+  "ttft": 25.279545783996582,
+  "tpot": 25.279545783996582,
+  "tps": 0.09472744040292962,
+  "model_init_s": 70.75207805633545,
+  "processed_seconds": 2.3946666666666667
+}
+
+Packages: urllib3-2.5.0 yamlargparse-1.31.1
+
+
+What each field means:
+timestamp: when the run finished (UTC).
+model/task/input_path: identifiers.
+model_init_s: time to construct/load the model (incl. first-time checkpoint download).
+tpot: total wall-clock seconds spent in the single inference call.
+ttft: time-to-first-output; for a single file it equals tpot.
+processed_seconds: duration of audio processed (from output length or input file).
+tps: processed_seconds / tpot (sec processed per wall-sec). >1 is faster than real-time; <1 slower.

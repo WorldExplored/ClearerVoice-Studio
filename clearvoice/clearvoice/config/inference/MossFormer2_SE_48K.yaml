@@ -2,6 +2,7 @@
 mode: 'inference'
 use_cuda: 1 # 1 for True, 0 for False
 num_gpu: 1
+fp16: 1
 sampling_rate: 48000
 network: "MossFormer2_SE_48K"  ##network type
 checkpoint_dir: "checkpoints/MossFormer2_SE_48K"

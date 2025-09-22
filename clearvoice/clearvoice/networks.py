@@ -476,6 +476,9 @@ class CLS_FRCRN_SE_16K(SpeechModel):
         # Move model to the appropriate device (GPU/CPU)
         if args.use_cuda == 1:
             self.model.to(self.device)
+            # Optional FP16 inference
+            if getattr(args, 'fp16', 0) == 1 or self.device.type == 'cuda':
+                self.model.half()
         
         # Set the model to evaluation mode (no gradient calculation)
         self.model.eval()
@@ -506,6 +509,9 @@ class CLS_MossFormer2_SE_48K(SpeechModel):
         # Move model to the appropriate device (GPU/CPU)
         if args.use_cuda == 1:
             self.model.to(self.device)
+            # Optional FP16 inference (post-quantization cast on CUDA only)
+            if getattr(args, 'fp16', 0) == 1 and self.device.type == 'cuda':
+                self.model.half()
         
         # Set the model to evaluation mode (no gradient calculation)
         self.model.eval()
@@ -539,11 +545,17 @@ class CLS_MossFormer2_SR_48K(SpeechModel):
         if args.use_cuda == 1:
             for model in self.model:
                 model.to(self.device)
-        
+        # Remove weight norm on generator prior to any dtype casting
+        self.model[1].remove_weight_norm()
+
+        # Optional FP16 inference (post-training quantization cast on CUDA only)
+        if getattr(args, 'fp16', 0) == 1 and self.device.type == 'cuda':
+            for model in self.model:
+                model.half()
+
         # Set the model to evaluation mode (no gradient calculation)
         for model in self.model:
             model.eval()
-        self.model[1].remove_weight_norm()
 
 class CLS_MossFormerGAN_SE_16K(SpeechModel):
     """
